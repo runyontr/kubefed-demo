@@ -1,0 +1,10 @@
+apiVersion: types.kubefed.k8s.io/v1beta1
+kind: FederatedNamespace
+metadata:
+  name: request-log
+  namespace: request-log
+spec:
+  placement:
+    clusters:
+    - name: cluster2
+    - name: cluster1
