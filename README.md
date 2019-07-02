@@ -1,8 +1,8 @@
 # Kubefed Demo
 
-This demo goes through deploying a federated minikube environment and deploying and managing an application between the two.
+This demo goes through deploying a federated [Minikube](https://kubernetes.io/docs/tasks/tools/install-minikube/) environment and deploying and managing an application between the two Kubernetes clusters.
 
-We will deploy two Minikube profiles (`cluster1` and `cluster2`) with `cluster1` being the primary cluster. After federating the two clusters, we will deploy an federated application to `cluster1` and propegate it to `cluster2`.
+We will deploy two Minikube profiles (`cluster1` and `cluster2`) with `cluster1` being the Host Cluster. After federating the two clusters, we will deploy an federated application to `cluster1` and propegate it to `cluster2`.
 
 ## Install
 
@@ -20,7 +20,7 @@ Install the [Helm CLI](https://helm.sh/docs/using_helm/#installing-the-helm-clie
 
 ## Infra Setup
 
-The minikube version used in this demo is
+The Minikube version used in this demo is
 
 ```bash
 $ minikube version
@@ -34,9 +34,20 @@ minikube start -p cluster1 --kubernetes-version v1.15.0
 minikube start -p cluster2 --kubernetes-version v1.15.0
 ```
 
+And note that there are comparable cluster configs created for `kubectl`
+
+```bash
+$ kubectl --cluster=cluster1 get nodes
+NAME       STATUS   ROLES    AGE     VERSION
+minikube   Ready    master   9m51s   v1.15.0
+$ kubectl --cluster=cluster2 get nodes
+NAME       STATUS   ROLES    AGE     VERSION
+minikube   Ready    master   2m52s   v1.15.0
+```
+
 ## Deploy KubeFed
 
-Since `cluster1` will run the KubeFed Control plane, we need to run the following commands against `cluster1`.
+Since `cluster1` is the Host cluster, the KubeFed Control plane will be installed there. we need to run the following commands against `cluster1`.
 
 ### Install And Configure Tiller
 
@@ -164,12 +175,15 @@ I0626 07:56:47.832754   41157 join.go:432] Created secret in host cluster: clust
 I0626 07:56:47.832763   41157 join.go:246] Cluster credentials secret created
 I0626 07:56:47.832769   41157 join.go:248] Creating federated cluster resource
 I0626 07:56:47.852460   41157 join.go:257] Created federated cluster resource
+$ kubectl --cluster=cluster1 get kubefedclusters.core.kubefed.k8s.io -n kube-federation-system
+NAME       READY   AGE
+cluster1   True    2m27s
 ```
 
 Cluster 1 Also needs to know about Cluster 2. Provide the connection to cluster 2 via the local kube config `cluster2`:
 
 ```bash
-$kubefedctl join cluster2 --cluster-context cluster2 --host-cluster-context cluster1 --v=2
+$ kubefedctl join cluster2 --cluster-context cluster2 --host-cluster-context cluster1 --v=2
 I0626 07:56:47.892542   41158 join.go:159] Args and flags: name cluster2, host: cluster1, host-system-namespace: kube-federation-system, kubeconfig: , cluster-context: cluster2, secret-name: , dry-run: false
 I0626 07:56:47.993572   41158 join.go:219] Performing preflight checks.
 I0626 07:56:48.002908   41158 join.go:225] Creating kube-federation-system namespace in joining cluster
@@ -191,10 +205,10 @@ I0626 07:56:48.074932   41158 join.go:257] Created federated cluster resource
 Upon running these commands, we can see the configured federated clusters here:
 
 ```bash
-$ kubectl --cluster=cluster1 -n kube-federation-system get kubefedclusters
+$ kubectl --cluster=cluster1 get kubefedclusters.core.kubefed.k8s.io -n kube-federation-system
 NAME       READY   AGE
-cluster1   True    2m19s
-cluster2   True    2m18s
+cluster1   True    6m44s
+cluster2   True    21s
 ```
 
 ## Deploy a Federated Application
@@ -235,7 +249,7 @@ kubectl --cluster=cluster1 apply -f federation/federatednamespace.yaml
 or federating with `kubefedctl` via:
 
 ```bash
-TODO
+kubefedctl federate namespace request-log --host-cluster-context=cluster1
 ```
 
 Now the namespace is up in cluster2, but the objects were not propegated over:
@@ -252,6 +266,32 @@ $ kubectl --cluster=cluster2 get all -n request-log
 No resources found.
 ```
 
+So if it doesn't bring along those values, what does the federated namespace do?
+
+Ensure namespace gets recreated:
+
+```bash
+$ kubectl --cluster=cluster2 delete ns request-log
+namespace "request-log" deleted
+
+$ kubectl --cluster=cluster2 get ns
+NAME                     STATUS   AGE
+default                  Active   34m
+kube-federation-system   Active   24m
+kube-node-lease          Active   34m
+kube-public              Active   34m
+kube-system              Active   34m
+
+$ kubectl --cluster=cluster2 get ns
+NAME                     STATUS   AGE
+default                  Active   34m
+kube-federation-system   Active   24m
+kube-node-lease          Active   34m
+kube-public              Active   34m
+kube-system              Active   34m
+request-log              Active   2s
+```
+
 To move the deployment, we have to
 
 ### Federate the deployment
@@ -261,15 +301,31 @@ The object types that are federated can be shown via
 ```bash
 $ kubefedctl federate deployments.apps request-log -n request-log --host-cluster-context=cluster1
 I0701 07:23:58.835548   12539 federate.go:480] Successfully created FederatedDeployment "request-log/request-log" from Deployment
-kubectl --cluster=cluster1 get federateddeployments.types.kubefed.k8s.io -n request-log
+$ kubectl --cluster=cluster1 get federateddeployments.types.kubefed.k8s.io -n request-log
 NAME          AGE
-request-log   72s
+request-log   17s
 ```
 
 We also need to deploy the service object:
 
 ```bash
 $ kubefedctl federate service request-log -n request-log --host-cluster-context=cluster1
+$ kubectl --cluster=cluster2 get all -n request-log
+NAME                              READY   STATUS              RESTARTS   AGE
+pod/request-log-b4665fd84-6ks6z   0/1     ContainerCreating   0          41s
+pod/request-log-b4665fd84-6zpbg   0/1     ContainerCreating   0          41s
+pod/request-log-b4665fd84-tgmwh   0/1     ContainerCreating   0          41s
+
+
+NAME                  TYPE           CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
+service/request-log   LoadBalancer   10.108.76.40   <pending>     80:32565/TCP   9s
+
+
+NAME                          READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/request-log   0/3     3            0           41s
+
+NAME                                    DESIRED   CURRENT   READY   AGE
+replicaset.apps/request-log-b4665fd84   3         3         0       41s
 ```
 
 Now we can see the application running:
@@ -282,7 +338,7 @@ cluster1
 
 ### Adjusting the deployment
 
-To scale the deployment, its no longer possible to control the specs from the initial deployment object:
+To scale the deployment, its no longer possible to control the specs from the initial deployment object, since the object is now managed by the federation controller.
 
 ```bash
 $ kubectl --cluster=cluster1 scale deployment -n request-log request-log --replicas=1
@@ -313,7 +369,7 @@ replicaset.apps/request-log-7f4548d78d   1         1         1       25m
 
 # Cluster specific overrides
 
-In order to update a value for a specific cluster, we can use the `overrides` section of the federated deployment. This section is defined on a per cluster basis. We will update the environment variable for `cluster2`:
+We saw how to adjust global settings in the previous section. This could work, as is, but there could be customizations you'd like to make on the federated deployment, e.g. number of replicas, environment variable value, etc. In order to update a value for a specific cluster, we can use the `overrides` section of the federated deployment. This section is defined on a per cluster basis. We will update the environment variable and replicas for the deployment for `cluster2`:
 
 ```bash
 kind: FederatedDeployment
@@ -328,7 +384,7 @@ spec:
       value: cluster2
 ```
 
-And we can see the differences:
+And we can see the differences in both the spec, and the deployed application:
 
 ```bash
 $ kubectl --cluster=cluster1 get deployments -n request-log request-log -o jsonpath="{ .spec.replicas }"
